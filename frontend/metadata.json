@@ -1,0 +1,5 @@
+{
+  "name": "Sunass - Sistema de Supervisión Regulatoria",
+  "description": "Sistema de monitoreo y evaluación para Prestadores de Servicios de Saneamiento (EP/JASS), enfocado en fiscalización, usuarios, caracterización y cuota familiar.",
+  "requestFramePermissions": ["geolocation"]
+}
