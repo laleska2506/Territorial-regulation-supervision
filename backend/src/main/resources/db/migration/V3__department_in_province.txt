@@ -1,0 +1,27 @@
+-- =========================================================
+-- V3: Make department_id NOT NULL in province
+-- =========================================================
+
+ALTER TABLE province
+  ALTER COLUMN department_id SET NOT NULL;
+
+  --modificacion de tabla locality - unique ubigeo
+ALTER TABLE locality
+DROP CONSTRAINT IF EXISTS locality_district_id_name_key;
+
+-- 1) Permitir que name no sea “único lógico” (si lo necesitas)
+ALTER TABLE prestador
+  DROP CONSTRAINT IF EXISTS prestador_prestador_type_name_key;
+
+-- 2) Asegurar que el código sea único (si tu Excel lo trae siempre)
+-- (Si hay códigos nulos, primero hay que limpiarlos)
+ALTER TABLE prestador
+  ADD CONSTRAINT uq_prestador_code UNIQUE (code);
+
+ALTER TABLE prestador
+  ADD CONSTRAINT uq_prestador_type_code UNIQUE (prestador_type, code);
+
+-- AGG nuevos tipos de Prestadores
+ALTER TYPE prestador_type ADD VALUE IF NOT EXISTS 'PM';
+ALTER TYPE prestador_type ADD VALUE IF NOT EXISTS 'UGM';
+ALTER TYPE prestador_type ADD VALUE IF NOT EXISTS 'OTROS';

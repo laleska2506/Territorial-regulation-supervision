@@ -1,0 +1,107 @@
+-- =========================================================
+-- V6__inserts_prestador.sql
+-- Carga PRESTADORES desde prestador_stage a prestador (UPSERT por code)
+-- Evita error 21000 (ON CONFLICT DO UPDATE twice) deduplicando por code.
+-- =========================================================
+
+BEGIN;
+
+-- ---------------------------------------------------------
+-- 0) Recomendación: asegurar que 'code' sea la clave única del prestador
+--    (Si ya lo hiciste en otra versión, esto no hará daño)
+-- ---------------------------------------------------------
+
+-- Quitar unique antiguo por (prestador_type, name) si existe
+ALTER TABLE prestador
+  DROP CONSTRAINT IF EXISTS prestador_prestador_type_name_key;
+
+-- Asegurar unique por code (si code puede ser NULL, la constraint permite múltiples NULLs)
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conrelid = 'prestador'::regclass
+      AND conname = 'uq_prestador_code'
+  ) THEN
+    ALTER TABLE prestador
+      ADD CONSTRAINT uq_prestador_code UNIQUE (code);
+  END IF;
+END $$;
+
+-- ---------------------------------------------------------
+-- 1) UPSERT de PRESTADOR desde STAGE (1 fila por codigo)
+--    - Usa DISTINCT ON para deduplicar por codigo_prestador
+--    - Toma la fila "más reciente" por anio_caracterizacion si existe
+-- ---------------------------------------------------------
+
+WITH src AS (
+  SELECT DISTINCT ON (TRIM(s.codigo_prestador))
+    -- Identidad del prestador
+    NULLIF(TRIM(s.codigo_prestador), '') AS code,
+    TRIM(s.nombre_prestador) AS name,
+
+    -- Mapeo de tipo (ajusta aquí según tus valores reales)
+    CASE
+      WHEN UPPER(TRIM(s.tipo_prestador)) IN ('JASS','JAS') THEN 'JASS'::prestador_type
+      WHEN UPPER(TRIM(s.tipo_prestador)) IN ('EP','EPS') THEN 'EP'::prestador_type
+      WHEN UPPER(TRIM(s.tipo_prestador)) IN ('OC') THEN 'OC'::prestador_type
+      ELSE 'OTRO'::prestador_type
+    END AS prestador_type,
+
+    NULLIF(TRIM(s.ruc), '') AS ruc,
+
+    -- Atributos (JSONB) - extensible
+    jsonb_strip_nulls(
+      jsonb_build_object(
+        'anio_caracterizacion', s.anio_caracterizacion,
+        'cobra_cuota', s.cobra_cuota,
+        'continuidad_horas_dia', s.continuidad_horas_dia,
+        'poblacion_inei', s.poblacion_inei,
+        'viviendas_inei', s.viviendas_inei,
+
+        -- Guardar referencia territorial del Excel (solo auditoría)
+        'departamento_excel', s.departamento,
+        'provincia_excel', s.provincia,
+        'distrito_excel', s.distrito,
+        'centro_poblado_excel', s.centro_poblado
+      )
+    ) AS attributes
+  FROM prestador_stage s
+  WHERE NULLIF(TRIM(s.codigo_prestador), '') IS NOT NULL
+  ORDER BY
+    TRIM(s.codigo_prestador),
+    s.anio_caracterizacion DESC NULLS LAST
+)
+INSERT INTO prestador (prestador_type, name, code, ruc, attributes)
+SELECT
+  src.prestador_type,
+  src.name,
+  src.code,
+  src.ruc,
+  src.attributes
+FROM src
+ON CONFLICT (code) DO UPDATE
+SET
+  prestador_type = EXCLUDED.prestador_type,
+  name = EXCLUDED.name,
+  ruc = COALESCE(EXCLUDED.ruc, prestador.ruc),
+  attributes = prestador.attributes || EXCLUDED.attributes;
+
+-- ---------------------------------------------------------
+-- 2) Crear relaciones Prestador <-> Localidad
+-- ---------------------------------------------------------
+
+INSERT INTO prestador_locality (prestador_id, locality_id, is_primary, notes)
+SELECT DISTINCT
+  p.id,
+  l.id,
+  FALSE,
+  'Carga inicial desde prestador_stage'
+FROM prestador_stage s
+JOIN prestador p ON p.code = TRIM(s.codigo_prestador)
+JOIN locality  l ON l.ubigeo = TRIM(s.ubigeo)
+ON CONFLICT (prestador_id, locality_id) DO NOTHING;
+
+
+COMMIT;

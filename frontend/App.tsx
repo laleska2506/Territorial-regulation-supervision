@@ -8,13 +8,13 @@ import { HistoryView } from './components/HistoryView';
 import { EvaluationForm } from './components/EvaluationForm';
 import { generateSupervisionReport } from './services/geminiService';
 import { Organization, OrganizationType, Locality, VisitRecord, ChecklistState, SubLocation } from './types';
-import { RAW_APURIMAC_DATA, normalizeData, getDistrictsByOrganization } from './territorialData';
+// territorialData.ts no longer needed — data comes from backend API
 import { ALL_QUESTIONS } from './constants';
-import { 
-  Bot, 
-  Loader2, 
-  Save, 
-  LayoutDashboard, 
+import {
+  Bot,
+  Loader2,
+  Save,
+  LayoutDashboard,
   ChevronLeft,
   ChevronRight,
   PanelLeftClose,
@@ -40,14 +40,14 @@ const App: React.FC = () => {
   const [selectedSede, setSelectedSede] = useState<SubLocation | null>(null);
   const [activeTab, setActiveTab] = useState<Tab>('FISCALIZACION');
   const [historyFilter, setHistoryFilter] = useState<string>('ALL');
-  
+
   const [providerSedes, setProviderSedes] = useState<SubLocation[]>([]);
   const [checklist, setChecklist] = useState<ChecklistState>({});
   const [evaluationPhotos, setEvaluationPhotos] = useState<string[]>([]);
   const [reportSummary, setReportSummary] = useState<string | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [isSaved, setIsSaved] = useState(false);
-  
+
   const [history, setHistory] = useState<VisitRecord[]>(() => {
     const saved = localStorage.getItem('sunass_history');
     if (saved) {
@@ -73,45 +73,27 @@ const App: React.FC = () => {
   }, [providerSedes, selectedProvider]);
 
   const handleOrgSelect = (org: Organization, loc: { province: string, district: string }) => {
-    // Find or create locality ID for the INITIAL selection
+    // Organization already comes enriched from TerritorialSelector
     const locId = `loc-${loc.province}-${loc.district}`;
     const locality: Locality = { id: locId, ...loc };
-    
-    // Enrich org with default values for UI compatibility
-    const enrichedOrg: Organization = {
-      ...org,
-      status: 'ACTIVO',
-      ruc: '20123456789',
-      location: {
-        region: 'APURIMAC',
-        province: loc.province,
-        district: loc.district,
-        ccpp: loc.district
-      },
-      population: 5000,
-      connections: 1200,
-      lastAudit: 'Pendiente',
-      sedes: [] 
-    };
 
-    setSelectedProvider(enrichedOrg);
+    setSelectedProvider(org);
     setSelectedLocality(locality);
-    
-    // Initialize sedes based on ALL districts linked to this organization
+
+    // Initialize sedes from localStorage or create a default one for the selected location
     const savedSedes = localStorage.getItem(`sedes_${org.id}`);
     if (savedSedes) {
       setProviderSedes(JSON.parse(savedSedes));
     } else {
-      const linkedDistricts = getDistrictsByOrganization(RAW_APURIMAC_DATA, org.name);
-      const defaultSedes: SubLocation[] = linkedDistricts.map((ld, idx) => ({
-        id: `sede-${org.id}-${ld.province}-${ld.district}`,
-        name: ld.district,
+      const defaultSedes: SubLocation[] = [{
+        id: `sede-${org.id}-${loc.province}-${loc.district}`,
+        name: loc.district,
         type: org.type === 'EPS' ? 'Pequeña Ciudad' as any : 'Organización Comunal' as any,
         status: 'NO_PROGRAMADO',
-        lat: -13.6333 + (idx * 0.01), // Slightly offset mock coords
-        lng: -72.8833 + (idx * 0.01),
+        lat: org.location?.lat || -13.6333,
+        lng: org.location?.lng || -72.8833,
         completedModules: []
-      }));
+      }];
       setProviderSedes(defaultSedes);
     }
     setView('DASHBOARD');
@@ -119,18 +101,14 @@ const App: React.FC = () => {
 
   const handleSedeSelect = (sede: SubLocation, module: string) => {
     setSelectedSede(sede);
-    
-    // Update selectedLocality based on the selected district (sede)
+
+    // Update selectedLocality based on the selected sede
     if (selectedProvider) {
-      const linkedDistricts = getDistrictsByOrganization(RAW_APURIMAC_DATA, selectedProvider.name);
-      const districtInfo = linkedDistricts.find(ld => ld.district === sede.name);
-      if (districtInfo) {
-        setSelectedLocality({
-          id: `loc-${districtInfo.province}-${districtInfo.district}`,
-          province: districtInfo.province,
-          district: districtInfo.district
-        });
-      }
+      setSelectedLocality({
+        id: `loc-${selectedProvider.location?.province || ''}-${sede.name}`,
+        province: selectedProvider.location?.province || '',
+        district: sede.name
+      });
     }
 
     setActiveTab(module as Tab);
@@ -147,14 +125,14 @@ const App: React.FC = () => {
   };
 
   const handleAddSedeToRoute = (sede: SubLocation) => {
-    setProviderSedes(prev => 
+    setProviderSedes(prev =>
       prev.map(s => s.id === sede.id ? { ...s, status: 'PENDIENTE' as const, completedModules: [] } : s)
     );
   };
 
   const handleAnalyzeAndSave = async () => {
     if (!selectedProvider || !selectedSede || !selectedLocality) return;
-    
+
     setIsAnalyzing(true);
     setReportSummary(null);
 
@@ -206,7 +184,7 @@ const App: React.FC = () => {
     const recordDate = new Date(record.date);
     const dateStr = recordDate.toLocaleDateString('es-PE', { day: '2-digit', month: 'long', year: 'numeric' });
     const timeStr = recordDate.toLocaleTimeString('es-PE', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-    
+
     printWindow.document.write(`
       <html>
         <head>
@@ -361,18 +339,18 @@ const App: React.FC = () => {
           <div class="content-section">
             <div class="markdown-content">
               ${(record.reportSummary || '')
-                .replace(/^# (.*$)/gim, '<h1>$1</h1>')
-                .replace(/^## (.*$)/gim, '<h2>$1</h2>')
-                .replace(/^### (.*$)/gim, '<h3>$1</h3>')
-                .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-                .replace(/^\s*-\s*(.*$)/gim, '<li>$1</li>')
-                .split('\n').map(line => {
-                  if (line.startsWith('<h') || line.startsWith('<li')) return line;
-                  if (line.trim() === '') return '';
-                  return `<p>${line}</p>`;
-                }).join('')
-                .replace(/(<li>.*<\/li>)/g, '<ul>$1</ul>')
-                .replace(/<\/ul><ul>/g, '')}
+        .replace(/^# (.*$)/gim, '<h1>$1</h1>')
+        .replace(/^## (.*$)/gim, '<h2>$1</h2>')
+        .replace(/^### (.*$)/gim, '<h3>$1</h3>')
+        .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+        .replace(/^\s*-\s*(.*$)/gim, '<li>$1</li>')
+        .split('\n').map(line => {
+          if (line.startsWith('<h') || line.startsWith('<li')) return line;
+          if (line.trim() === '') return '';
+          return `<p>${line}</p>`;
+        }).join('')
+        .replace(/(<li>.*<\/li>)/g, '<ul>$1</ul>')
+        .replace(/<\/ul><ul>/g, '')}
             </div>
           </div>
 
@@ -399,7 +377,7 @@ const App: React.FC = () => {
 
   const handleDownloadReport = () => {
     if (!reportSummary || !selectedSede || !selectedProvider) return;
-    
+
     // Create a temporary record for current evaluation
     const tempRecord: VisitRecord = {
       id: `REC-${Date.now()}`,
@@ -434,7 +412,7 @@ const App: React.FC = () => {
               <Database className="w-6 h-6 text-indigo-600" />
             </div>
           </div>
-          
+
           <TerritorialSelector onSelect={handleOrgSelect} />
         </div>
       </div>
@@ -455,16 +433,16 @@ const App: React.FC = () => {
             {selectedProvider.name}
           </button>
           {view === 'TERRITORIAL_EXPLORER' && (
-             <>
+            <>
               <ChevronRight className="w-3 h-3 text-slate-300" />
               <span className="text-slate-900 font-bold">Gestión Territorial</span>
-             </>
+            </>
           )}
           {view === 'HISTORY' && (
-             <>
+            <>
               <ChevronRight className="w-3 h-3 text-slate-300" />
               <span className="text-slate-900 font-bold">Historial de Supervisiones</span>
-             </>
+            </>
           )}
         </div>
         <div className="flex items-center gap-3">
@@ -481,10 +459,10 @@ const App: React.FC = () => {
               {isSidebarOpen ? <PanelLeftClose className="w-5 h-5" /> : <PanelLeftOpen className="w-5 h-5 mx-auto" />}
             </button>
           </div>
-          
+
           <div className="flex-1 py-4 overflow-y-auto custom-scroll">
             <div className="px-3 mb-2 space-y-1">
-               <button onClick={() => setView('DASHBOARD')} className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all ${view === 'DASHBOARD' ? 'bg-indigo-600 text-white shadow-lg' : 'hover:bg-slate-800 text-slate-400'}`}>
+              <button onClick={() => setView('DASHBOARD')} className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all ${view === 'DASHBOARD' ? 'bg-indigo-600 text-white shadow-lg' : 'hover:bg-slate-800 text-slate-400'}`}>
                 <LayoutDashboard className="w-5 h-5 shrink-0" />
                 {isSidebarOpen && <span className="text-sm font-medium">Dashboard</span>}
               </button>
@@ -506,29 +484,29 @@ const App: React.FC = () => {
           <main className="flex-1 overflow-y-auto custom-scroll">
             <div className="animate-fade-in">
               {view === 'DASHBOARD' && (
-                <ProviderDashboard 
-                  provider={{...selectedProvider, sedes: providerSedes}} 
+                <ProviderDashboard
+                  provider={{ ...selectedProvider, sedes: providerSedes }}
                   history={history.filter(r => r.organizationId === selectedProvider.id)}
-                  onSelectSede={handleSedeSelect} 
+                  onSelectSede={handleSedeSelect}
                   onManageSedes={() => setView('TERRITORIAL_EXPLORER')}
                   onViewHistory={handleViewHistory}
                 />
               )}
-              
+
               {view === 'TERRITORIAL_EXPLORER' && (
-                <TerritorialExplorer 
-                  sedes={providerSedes} 
-                  onSelectSede={handleSedeSelect} 
+                <TerritorialExplorer
+                  sedes={providerSedes}
+                  onSelectSede={handleSedeSelect}
                   onAddSedeToRoute={handleAddSedeToRoute}
                   onBack={() => setView('DASHBOARD')}
                 />
               )}
 
               {view === 'HISTORY' && selectedProvider && (
-                <HistoryView 
-                  records={history.filter(r => r.organizationId === selectedProvider.id)} 
+                <HistoryView
+                  records={history.filter(r => r.organizationId === selectedProvider.id)}
                   provider={selectedProvider}
-                  onBack={() => setView('DASHBOARD')} 
+                  onBack={() => setView('DASHBOARD')}
                   onDownloadReport={downloadReport}
                   initialFilter={historyFilter}
                 />
@@ -536,106 +514,106 @@ const App: React.FC = () => {
 
               {view === 'EVALUATION' && (
                 <div className="p-8 max-w-6xl mx-auto space-y-8 pb-20">
-                   <div className="flex items-center justify-between">
-                      <div className="space-y-1">
-                        <h2 className="text-3xl font-extrabold text-slate-900 tracking-tight flex items-center gap-3">
-                          {activeTab.replace('_', ' ')}
-                          <span className="text-xs font-medium bg-indigo-100 text-indigo-700 px-3 py-1 rounded-full uppercase tracking-widest">Módulo Activo</span>
-                        </h2>
-                        <p className="text-slate-500 flex items-center gap-2">
-                          Evaluando PC/OC: <span className="font-bold text-slate-700">{selectedSede?.name}</span> • {selectedSede?.type}
-                        </p>
-                      </div>
-                      <button onClick={() => setView('TERRITORIAL_EXPLORER')} className="px-4 py-2 text-sm font-bold text-slate-600 hover:bg-slate-200 rounded-xl transition-colors flex items-center gap-2">
-                        <ChevronLeft className="w-4 h-4" /> Cancelar y Volver
-                      </button>
-                   </div>
+                  <div className="flex items-center justify-between">
+                    <div className="space-y-1">
+                      <h2 className="text-3xl font-extrabold text-slate-900 tracking-tight flex items-center gap-3">
+                        {activeTab.replace('_', ' ')}
+                        <span className="text-xs font-medium bg-indigo-100 text-indigo-700 px-3 py-1 rounded-full uppercase tracking-widest">Módulo Activo</span>
+                      </h2>
+                      <p className="text-slate-500 flex items-center gap-2">
+                        Evaluando PC/OC: <span className="font-bold text-slate-700">{selectedSede?.name}</span> • {selectedSede?.type}
+                      </p>
+                    </div>
+                    <button onClick={() => setView('TERRITORIAL_EXPLORER')} className="px-4 py-2 text-sm font-bold text-slate-600 hover:bg-slate-200 rounded-xl transition-colors flex items-center gap-2">
+                      <ChevronLeft className="w-4 h-4" /> Cancelar y Volver
+                    </button>
+                  </div>
 
-                   <div className="grid grid-cols-1 xl:grid-cols-3 gap-8 items-start">
-                      <div className="xl:col-span-2 space-y-6">
-                        <EvaluationForm 
-                          questions={ALL_QUESTIONS[activeTab]} 
-                          checklist={checklist} 
-                          photos={evaluationPhotos}
-                          onChange={handleChecklistChange} 
-                          onPhotosChange={setEvaluationPhotos}
-                        />
-                      </div>
-                      
-                      <div className="sticky top-6 space-y-6">
-                         <div className="bg-white p-6 rounded-3xl shadow-xl border border-slate-100 ring-1 ring-slate-900/5">
-                            <h3 className="font-bold text-slate-900 mb-5 flex items-center gap-2">
-                               <Bot className="w-5 h-5 text-indigo-600" /> Inteligencia Regulatoria
-                            </h3>
-                            
-                            <div className="space-y-4">
-                              {isSaved ? (
-                                <div className="p-4 bg-emerald-50 rounded-2xl border border-emerald-100 flex items-center gap-3 mb-2 animate-fade-in">
-                                  <div className="bg-emerald-500 p-1.5 rounded-full text-white">
-                                    <CheckCircle className="w-4 h-4" />
-                                  </div>
-                                  <div>
-                                    <p className="text-xs font-black text-emerald-800 uppercase tracking-widest">Informe Guardado</p>
-                                    <p className="text-[10px] text-emerald-600 font-bold">Registro archivado exitosamente.</p>
-                                  </div>
-                                </div>
-                              ) : (
-                                <p className="text-xs text-slate-400 font-medium leading-relaxed">
-                                  Al generar el informe, la IA analizará los hallazgos técnicos y guardará automáticamente el registro en el historial.
-                                </p>
-                              )}
+                  <div className="grid grid-cols-1 xl:grid-cols-3 gap-8 items-start">
+                    <div className="xl:col-span-2 space-y-6">
+                      <EvaluationForm
+                        questions={ALL_QUESTIONS[activeTab]}
+                        checklist={checklist}
+                        photos={evaluationPhotos}
+                        onChange={handleChecklistChange}
+                        onPhotosChange={setEvaluationPhotos}
+                      />
+                    </div>
 
-                              <button 
-                                onClick={handleAnalyzeAndSave} 
-                                disabled={isAnalyzing || Object.keys(checklist).length === 0} 
-                                className={`w-full py-4 px-6 rounded-2xl font-bold flex items-center justify-center gap-3 transition-all ${isAnalyzing || Object.keys(checklist).length === 0 ? 'bg-slate-100 text-slate-400 cursor-not-allowed' : 'bg-indigo-600 hover:bg-indigo-700 text-white shadow-lg active:scale-[0.98]'}`}
+                    <div className="sticky top-6 space-y-6">
+                      <div className="bg-white p-6 rounded-3xl shadow-xl border border-slate-100 ring-1 ring-slate-900/5">
+                        <h3 className="font-bold text-slate-900 mb-5 flex items-center gap-2">
+                          <Bot className="w-5 h-5 text-indigo-600" /> Inteligencia Regulatoria
+                        </h3>
+
+                        <div className="space-y-4">
+                          {isSaved ? (
+                            <div className="p-4 bg-emerald-50 rounded-2xl border border-emerald-100 flex items-center gap-3 mb-2 animate-fade-in">
+                              <div className="bg-emerald-500 p-1.5 rounded-full text-white">
+                                <CheckCircle className="w-4 h-4" />
+                              </div>
+                              <div>
+                                <p className="text-xs font-black text-emerald-800 uppercase tracking-widest">Informe Guardado</p>
+                                <p className="text-[10px] text-emerald-600 font-bold">Registro archivado exitosamente.</p>
+                              </div>
+                            </div>
+                          ) : (
+                            <p className="text-xs text-slate-400 font-medium leading-relaxed">
+                              Al generar el informe, la IA analizará los hallazgos técnicos y guardará automáticamente el registro en el historial.
+                            </p>
+                          )}
+
+                          <button
+                            onClick={handleAnalyzeAndSave}
+                            disabled={isAnalyzing || Object.keys(checklist).length === 0}
+                            className={`w-full py-4 px-6 rounded-2xl font-bold flex items-center justify-center gap-3 transition-all ${isAnalyzing || Object.keys(checklist).length === 0 ? 'bg-slate-100 text-slate-400 cursor-not-allowed' : 'bg-indigo-600 hover:bg-indigo-700 text-white shadow-lg active:scale-[0.98]'}`}
+                          >
+                            {isAnalyzing ? <Loader2 className="w-5 h-5 animate-spin" /> : <Bot className="w-5 h-5" />}
+                            {isAnalyzing ? 'Generando y Guardando...' : isSaved ? 'Actualizar Informe' : 'Generar y Registrar Informe IA'}
+                          </button>
+
+                          {isSaved && (
+                            <div className="grid grid-cols-2 gap-3">
+                              <button
+                                onClick={handleDownloadReport}
+                                className="py-3 px-4 bg-slate-900 text-white rounded-xl font-bold text-xs hover:bg-slate-800 transition-all flex items-center justify-center gap-2"
                               >
-                                  {isAnalyzing ? <Loader2 className="w-5 h-5 animate-spin" /> : <Bot className="w-5 h-5" />}
-                                  {isAnalyzing ? 'Generando y Guardando...' : isSaved ? 'Actualizar Informe' : 'Generar y Registrar Informe IA'}
+                                <Printer className="w-4 h-4" /> Imprimir
                               </button>
-
-                              {isSaved && (
-                                <div className="grid grid-cols-2 gap-3">
-                                  <button 
-                                    onClick={handleDownloadReport}
-                                    className="py-3 px-4 bg-slate-900 text-white rounded-xl font-bold text-xs hover:bg-slate-800 transition-all flex items-center justify-center gap-2"
-                                  >
-                                    <Printer className="w-4 h-4" /> Imprimir
-                                  </button>
-                                  <button 
-                                    onClick={() => handleViewHistory(activeTab)}
-                                    className="py-3 px-4 bg-white border border-slate-200 text-slate-600 rounded-xl font-bold text-xs hover:bg-slate-50 transition-all flex items-center justify-center gap-2"
-                                  >
-                                    <History className="w-4 h-4" /> Ir a Historial
-                                  </button>
-                                </div>
-                              )}
+                              <button
+                                onClick={() => handleViewHistory(activeTab)}
+                                className="py-3 px-4 bg-white border border-slate-200 text-slate-600 rounded-xl font-bold text-xs hover:bg-slate-50 transition-all flex items-center justify-center gap-2"
+                              >
+                                <History className="w-4 h-4" /> Ir a Historial
+                              </button>
                             </div>
-                         </div>
-
-                         {reportSummary && (
-                            <div className="bg-white rounded-3xl shadow-xl border border-indigo-100 overflow-hidden animate-fade-in">
-                                <div className="bg-indigo-600 px-6 py-4 flex justify-between items-center text-white font-bold text-xs uppercase tracking-widest">
-                                  <div className="flex items-center gap-2">
-                                    <FileDown className="w-4 h-4" /> Informe del Especialista
-                                  </div>
-                                </div>
-                                <div className="p-8 text-sm text-slate-700 leading-relaxed max-h-[500px] overflow-y-auto custom-scroll">
-                                    <ReactMarkdown components={{
-                                        strong: ({...props}) => <span className="font-bold text-indigo-950" {...props} />,
-                                        h1: ({...props}) => <h1 className="text-xl font-black mb-4 uppercase text-slate-900" {...props} />,
-                                        h2: ({...props}) => <h2 className="text-lg font-bold mt-8 mb-3 text-indigo-900 border-b border-indigo-50 pb-1" {...props} />,
-                                        ul: ({...props}) => <ul className="list-disc pl-5 space-y-3 mb-6" {...props} />,
-                                        p: ({...props}) => <p className="mb-4 text-slate-600" {...props} />,
-                                        li: ({...props}) => <li className="marker:text-indigo-400" {...props} />
-                                    }}>
-                                        {reportSummary}
-                                    </ReactMarkdown>
-                                </div>
-                            </div>
-                         )}
+                          )}
+                        </div>
                       </div>
-                   </div>
+
+                      {reportSummary && (
+                        <div className="bg-white rounded-3xl shadow-xl border border-indigo-100 overflow-hidden animate-fade-in">
+                          <div className="bg-indigo-600 px-6 py-4 flex justify-between items-center text-white font-bold text-xs uppercase tracking-widest">
+                            <div className="flex items-center gap-2">
+                              <FileDown className="w-4 h-4" /> Informe del Especialista
+                            </div>
+                          </div>
+                          <div className="p-8 text-sm text-slate-700 leading-relaxed max-h-[500px] overflow-y-auto custom-scroll">
+                            <ReactMarkdown components={{
+                              strong: ({ ...props }) => <span className="font-bold text-indigo-950" {...props} />,
+                              h1: ({ ...props }) => <h1 className="text-xl font-black mb-4 uppercase text-slate-900" {...props} />,
+                              h2: ({ ...props }) => <h2 className="text-lg font-bold mt-8 mb-3 text-indigo-900 border-b border-indigo-50 pb-1" {...props} />,
+                              ul: ({ ...props }) => <ul className="list-disc pl-5 space-y-3 mb-6" {...props} />,
+                              p: ({ ...props }) => <p className="mb-4 text-slate-600" {...props} />,
+                              li: ({ ...props }) => <li className="marker:text-indigo-400" {...props} />
+                            }}>
+                              {reportSummary}
+                            </ReactMarkdown>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
                 </div>
               )}
             </div>

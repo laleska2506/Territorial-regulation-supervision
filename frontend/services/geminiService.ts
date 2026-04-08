@@ -1,9 +1,7 @@
 
-import { GoogleGenAI } from "@google/genai";
 import { ChecklistState, Organization, Question } from "../types";
 
-// Initialize Gemini
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+const API_BASE_URL = "http://localhost:8080/api";
 
 export const generateSupervisionReport = async (
   provider: Organization,
@@ -11,54 +9,45 @@ export const generateSupervisionReport = async (
   questions: Question[],
   photoCount: number = 0
 ): Promise<string> => {
-  
-  // Prepare the findings narrative
-  let findings = "";
+
+  // Build answers map: questionText -> SI/NO
+  const answers: Record<string, string> = {};
   questions.forEach(q => {
     const status = checklist[q.id];
-    if (status === 'NO') {
-      findings += `- INCUMPLIMIENTO: ${q.text} (Referencia: ${q.referenceArt || 'Normativa General'}).\n`;
-    } else if (status === 'SI') {
-      findings += `- CUMPLE: ${q.text}.\n`;
+    if (status === 'SI' || status === 'NO') {
+      answers[q.text] = status;
     }
   });
 
-  if (!findings) findings = "No se han registrado hallazgos aún.";
+  const location = provider.location
+    ? `${provider.location.ccpp}, ${provider.location.district}, ${provider.location.region}`
+    : undefined;
 
-  const prompt = `
-    Actúa como un experto especialista en regulación de saneamiento de la Sunass (Superintendencia Nacional de Servicios de Saneamiento del Perú).
-    Estás redactando un "Informe de Supervisión Regulatoria" para un Prestador de Servicios de Saneamiento.
-
-    DATOS DEL PRESTADOR:
-    Nombre: ${provider.name}
-    Tipo: ${provider.type}
-    Ubicación: ${provider.location.ccpp}, ${provider.location.district}, ${provider.location.region}.
-
-    HALLAZGOS DE LA SUPERVISIÓN:
-    ${findings}
-
-    EVIDENCIA ADJUNTA:
-    Se han adjuntado ${photoCount} fotografías como evidencia técnica del estado de la infraestructura y cumplimiento de protocolos.
-
-    INSTRUCCIONES:
-    Genera un informe técnico con las siguientes secciones:
-    1. **Resumen Ejecutivo**: Resumen breve de la situación encontrada.
-    2. **Hallazgos Críticos**: Lista los problemas sistémicos o incumplimientos detectados. Menciona los artículos del Reglamento de Calidad de la Prestación de Servicios de Saneamiento en Pequeñas Ciudades (RCPSSPC) si aplica.
-    3. **Recomendaciones Técnicas**: 3 a 5 recomendaciones técnicas inmediatas y obligatorias para subsanar las observaciones.
-    
-    Tono: Formal, técnico y regulatorio.
-    Formato: Markdown limpio.
-  `;
+  const requestBody = {
+    providerName: provider.name,
+    providerType: provider.type,
+    location,
+    answers,
+    photoCount
+  };
 
   try {
-    const response = await ai.models.generateContent({
-      model: 'gemini-3-flash-preview',
-      contents: prompt,
+    const response = await fetch(`${API_BASE_URL}/reports/generate-direct`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(requestBody),
     });
-    
-    return response.text || "No se pudo generar el informe.";
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+
+    const data = await response.json();
+    return data.reportMarkdown || "No se pudo generar el informe.";
   } catch (error) {
     console.error("Error generating report:", error);
-    return "Error al conectar con el motor de análisis IA. Verifique su conexión o credenciales.";
+    return "Error al conectar con el motor de análisis IA. Verifique que el backend esté ejecutándose en localhost:8080.";
   }
 };

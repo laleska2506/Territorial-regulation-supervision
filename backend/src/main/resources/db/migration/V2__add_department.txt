@@ -1,0 +1,61 @@
+-- =========================================================
+-- V2: Agrega la dimensión "Department" y la relación con Province
+-- Jerarquía final: Department -> Province -> District -> Locality (UBIGEO)
+-- =========================================================
+
+-- 1) Crear tabla department
+CREATE TABLE IF NOT EXISTS department (
+  id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  name        CITEXT NOT NULL UNIQUE,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- 2) Agregar columna department_id a province (nullable por compatibilidad)
+ALTER TABLE province
+  ADD COLUMN IF NOT EXISTS department_id UUID;
+
+-- 3) Agregar FK
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conname = 'fk_province_department'
+  ) THEN
+    ALTER TABLE province
+      ADD CONSTRAINT fk_province_department
+      FOREIGN KEY (department_id)
+      REFERENCES department(id)
+      ON DELETE RESTRICT;
+  END IF;
+END $$;
+
+-- 4) Ajustar unicidad: UNIQUE(department_id, name)
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conrelid = 'province'::regclass
+      AND conname = 'province_name_key'
+  ) THEN
+    ALTER TABLE province DROP CONSTRAINT province_name_key;
+  END IF;
+END $$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conrelid = 'province'::regclass
+      AND conname = 'uq_province_department_name'
+  ) THEN
+    ALTER TABLE province
+      ADD CONSTRAINT uq_province_department_name UNIQUE (department_id, name);
+  END IF;
+END $$;
+
+-- 5) Índices
+CREATE INDEX IF NOT EXISTS idx_province_department ON province(department_id);
+CREATE INDEX IF NOT EXISTS idx_department_name ON department(name);

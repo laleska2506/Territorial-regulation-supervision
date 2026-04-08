@@ -1,0 +1,364 @@
+-- =========================================================
+-- Database: sunass_regulatorio
+-- Modelo: Evaluación de PRESTADORES por LOCALIDAD (UBIGEO) y MÓDULO
+-- =========================================================
+
+-- =========================================================
+-- EXTENSIONS
+-- =========================================================
+CREATE EXTENSION IF NOT EXISTS pgcrypto; -- gen_random_uuid()
+CREATE EXTENSION IF NOT EXISTS citext;   -- case-insensitive text
+
+-- =========================================================
+-- ENUMS
+-- =========================================================
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'prestador_type') THEN
+    CREATE TYPE prestador_type AS ENUM ('JASS', 'EP', 'OC', 'OTRO');
+  END IF;
+
+  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'module_type') THEN
+    CREATE TYPE module_type AS ENUM ('FISCALIZACION', 'USUARIOS', 'CARACTERIZACION', 'CUOTA_FAMILIAR');
+  END IF;
+
+  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'sync_status') THEN
+    CREATE TYPE sync_status AS ENUM ('PENDING', 'SYNCED', 'ERROR');
+  END IF;
+
+  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'geo_status') THEN
+    CREATE TYPE geo_status AS ENUM ('CAPTURED', 'FAILED');
+  END IF;
+END $$;
+
+-- =========================================================
+-- TERRITORIO
+-- =========================================================
+CREATE TABLE IF NOT EXISTS province (
+  id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  name        CITEXT NOT NULL UNIQUE,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS district (
+  id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  province_id UUID NOT NULL REFERENCES province(id) ON DELETE RESTRICT,
+  name        CITEXT NOT NULL,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (province_id, name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_district_province ON district(province_id);
+
+-- Localidad (identificador único: UBIGEO)
+CREATE TABLE IF NOT EXISTS locality (
+  id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+
+  province_id     UUID NOT NULL REFERENCES province(id) ON DELETE RESTRICT,
+  district_id     UUID NOT NULL REFERENCES district(id) ON DELETE RESTRICT,
+
+  ubigeo          VARCHAR(10) NOT NULL UNIQUE,
+  name            CITEXT NOT NULL,
+
+  lat             DOUBLE PRECISION,
+  lng             DOUBLE PRECISION,
+
+  population      INTEGER,
+  schools_count   INTEGER,
+  households_count INTEGER,
+  attributes      JSONB NOT NULL DEFAULT '{}'::jsonb,
+
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+  UNIQUE (district_id, name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_locality_district ON locality(district_id);
+CREATE INDEX IF NOT EXISTS idx_locality_province ON locality(province_id);
+
+-- =========================================================
+-- PRESTADORES
+-- =========================================================
+CREATE TABLE IF NOT EXISTS prestador (
+  id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  prestador_type prestador_type NOT NULL,
+  name          CITEXT NOT NULL,
+  code          CITEXT,
+  ruc           VARCHAR(20),
+
+  attributes    JSONB NOT NULL DEFAULT '{}'::jsonb,
+
+  is_active     BOOLEAN NOT NULL DEFAULT TRUE,
+
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (prestador_type, name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_prestador_type ON prestador(prestador_type);
+
+-- Relación N a N: Prestador <-> Localidad
+CREATE TABLE IF NOT EXISTS prestador_locality (
+  prestador_id  UUID NOT NULL REFERENCES prestador(id) ON DELETE RESTRICT,
+  locality_id   UUID NOT NULL REFERENCES locality(id) ON DELETE RESTRICT,
+
+  is_primary    BOOLEAN NOT NULL DEFAULT FALSE,
+  notes         TEXT,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+  PRIMARY KEY (prestador_id, locality_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_prestador_locality_locality ON prestador_locality(locality_id);
+CREATE INDEX IF NOT EXISTS idx_prestador_locality_prestador ON prestador_locality(prestador_id);
+
+-- =========================================================
+-- MODULOS y HABILITACION POR TIPO DE PRESTADOR
+-- =========================================================
+
+CREATE TABLE IF NOT EXISTS module_catalog (
+  module        module_type PRIMARY KEY,
+  display_name  TEXT NOT NULL,
+  description   TEXT,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+INSERT INTO module_catalog(module, display_name, description)
+VALUES
+ ('FISCALIZACION', 'Fiscalización', 'Módulo de fiscalización'),
+ ('USUARIOS', 'Usuarios', 'Módulo de usuarios'),
+ ('CARACTERIZACION', 'Caracterización', 'Módulo de caracterización'),
+ ('CUOTA_FAMILIAR', 'Cuota Familiar', 'Módulo de cuota familiar')
+ON CONFLICT (module) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS prestador_type_module (
+  prestador_type prestador_type NOT NULL,
+  module         module_type NOT NULL,
+  is_enabled     BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (prestador_type, module)
+);
+
+CREATE TABLE IF NOT EXISTS prestador_module_override (
+  prestador_id   UUID NOT NULL REFERENCES prestador(id) ON DELETE CASCADE,
+  module         module_type NOT NULL,
+  is_enabled     BOOLEAN NOT NULL,
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (prestador_id, module)
+);
+
+-- =========================================================
+-- USUARIOS (personal de análisis) - opcional
+-- =========================================================
+CREATE TABLE IF NOT EXISTS app_user (
+  id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  full_name   TEXT NOT NULL,
+  email       CITEXT UNIQUE,
+  role        TEXT NOT NULL DEFAULT 'ANALYST',
+  is_active   BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- =========================================================
+-- VISITAS (trazabilidad de campo)
+-- =========================================================
+CREATE TABLE IF NOT EXISTS visit (
+  id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+
+  prestador_id    UUID NOT NULL REFERENCES prestador(id) ON DELETE RESTRICT,
+  locality_id     UUID NOT NULL REFERENCES locality(id) ON DELETE RESTRICT,
+
+  user_id         UUID REFERENCES app_user(id) ON DELETE SET NULL,
+
+  visited_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+  geo_status      geo_status NOT NULL DEFAULT 'FAILED',
+  lat             DOUBLE PRECISION,
+  lng             DOUBLE PRECISION,
+  accuracy_m      DOUBLE PRECISION,
+  geo_captured_at TIMESTAMPTZ,
+
+  notes           TEXT,
+
+  offline_id      UUID UNIQUE,
+  device_id       TEXT,
+  sync_status     sync_status NOT NULL DEFAULT 'SYNCED',
+  last_sync_at    TIMESTAMPTZ,
+
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_visit_prestador_locality_time
+  ON visit(prestador_id, locality_id, visited_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_visit_sync_status ON visit(sync_status);
+
+-- =========================================================
+-- ENCUESTAS (historial por módulo)
+-- =========================================================
+CREATE TABLE IF NOT EXISTS survey (
+  id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+
+  visit_id         UUID NOT NULL REFERENCES visit(id) ON DELETE CASCADE,
+
+  prestador_id     UUID NOT NULL REFERENCES prestador(id) ON DELETE RESTRICT,
+  locality_id      UUID NOT NULL REFERENCES locality(id) ON DELETE RESTRICT,
+
+  module           module_type NOT NULL,
+  version          INTEGER NOT NULL DEFAULT 1,
+
+  payload          JSONB NOT NULL DEFAULT '{}'::jsonb,
+
+  answered_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  answered_lat     DOUBLE PRECISION,
+  answered_lng     DOUBLE PRECISION,
+  answered_accuracy_m DOUBLE PRECISION,
+  answered_geo_status geo_status NOT NULL DEFAULT 'FAILED',
+
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+  offline_id       UUID UNIQUE,
+  device_id        TEXT,
+  sync_status      sync_status NOT NULL DEFAULT 'SYNCED',
+  last_sync_at     TIMESTAMPTZ,
+
+  submitted_by     UUID REFERENCES app_user(id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_survey_key_last
+  ON survey(prestador_id, locality_id, module, answered_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_survey_visit ON survey(visit_id);
+CREATE INDEX IF NOT EXISTS idx_survey_sync_status ON survey(sync_status);
+CREATE INDEX IF NOT EXISTS idx_survey_payload_gin ON survey USING GIN (payload);
+
+-- View: última encuesta por Prestador + Localidad + Módulo
+CREATE OR REPLACE VIEW v_last_survey_by_prestador_locality_module AS
+SELECT DISTINCT ON (prestador_id, locality_id, module)
+  prestador_id,
+  locality_id,
+  module,
+  id AS survey_id,
+  answered_at
+FROM survey
+ORDER BY prestador_id, locality_id, module, answered_at DESC;
+
+-- =========================================================
+-- EVIDENCIAS (Fotos) asociadas a una encuesta
+-- =========================================================
+CREATE TABLE IF NOT EXISTS evidence (
+  id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  survey_id        UUID NOT NULL REFERENCES survey(id) ON DELETE CASCADE,
+
+  file_name       TEXT,
+  mime_type       TEXT NOT NULL,
+  file_size       BIGINT,
+  sha256          TEXT,
+  taken_at        TIMESTAMPTZ,
+
+  content         BYTEA,
+  storage_url     TEXT,
+
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+  offline_id      UUID UNIQUE,
+  device_id       TEXT,
+  sync_status     sync_status NOT NULL DEFAULT 'SYNCED',
+  last_sync_at    TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_evidence_survey ON evidence(survey_id);
+CREATE INDEX IF NOT EXISTS idx_evidence_sync_status ON evidence(sync_status);
+CREATE INDEX IF NOT EXISTS idx_evidence_sha256 ON evidence(sha256);
+
+-- =========================================================
+-- TRIGGERS
+-- =========================================================
+
+CREATE OR REPLACE FUNCTION fn_validate_prestador_locality_link()
+RETURNS TRIGGER AS $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM prestador_locality pl
+    WHERE pl.prestador_id = NEW.prestador_id
+      AND pl.locality_id  = NEW.locality_id
+  ) THEN
+    RAISE EXCEPTION 'Prestador % no está vinculado a la Localidad %', NEW.prestador_id, NEW.locality_id;
+  END IF;
+
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_trigger WHERE tgname = 'trg_validate_visit_prestador_locality'
+  ) THEN
+    CREATE TRIGGER trg_validate_visit_prestador_locality
+    BEFORE INSERT OR UPDATE ON visit
+    FOR EACH ROW
+    EXECUTE FUNCTION fn_validate_prestador_locality_link();
+  END IF;
+END $$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_trigger WHERE tgname = 'trg_validate_survey_prestador_locality'
+  ) THEN
+    CREATE TRIGGER trg_validate_survey_prestador_locality
+    BEFORE INSERT OR UPDATE ON survey
+    FOR EACH ROW
+    EXECUTE FUNCTION fn_validate_prestador_locality_link();
+  END IF;
+END $$;
+
+CREATE OR REPLACE FUNCTION fn_is_module_enabled(p_prestador_id UUID, p_module module_type)
+RETURNS BOOLEAN AS $$
+DECLARE
+  v_type prestador_type;
+  v_override BOOLEAN;
+  v_base BOOLEAN;
+BEGIN
+  SELECT prestador_type INTO v_type
+  FROM prestador
+  WHERE id = p_prestador_id;
+
+  SELECT is_enabled INTO v_override
+  FROM prestador_module_override
+  WHERE prestador_id = p_prestador_id AND module = p_module;
+
+  IF v_override IS NOT NULL THEN
+    RETURN v_override;
+  END IF;
+
+  SELECT is_enabled INTO v_base
+  FROM prestador_type_module
+  WHERE prestador_type = v_type AND module = p_module;
+
+  RETURN COALESCE(v_base, FALSE);
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION fn_validate_module_enabled()
+RETURNS TRIGGER AS $$
+BEGIN
+  IF NOT fn_is_module_enabled(NEW.prestador_id, NEW.module) THEN
+    RAISE EXCEPTION 'Módulo % no habilitado para el prestador %', NEW.module, NEW.prestador_id;
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_trigger WHERE tgname = 'trg_validate_survey_module_enabled'
+  ) THEN
+    CREATE TRIGGER trg_validate_survey_module_enabled
+    BEFORE INSERT OR UPDATE ON survey
+    FOR EACH ROW
+    EXECUTE FUNCTION fn_validate_module_enabled();
+  END IF;
+END $$;
